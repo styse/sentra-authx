@@ -11,15 +11,16 @@ from django.utils import timezone
 from .models import OTP, User
 from .serializers import (
     UserRegisterSerializer, UserLoginSerializer,
-    OTPRequestSerializer, OTPVerifySerializer
+    OTPRequestSerializer, OTPVerifySerializer,
+    LoginResponseSerializer
 )
 from apps.user_sessions.services import (
     deactivate_session_by_token_key,
     deactivate_all_sessions_for_user,
     create_user_session
 )
+from drf_spectacular.utils import extend_schema, OpenApiExample
 import random
-
 
 class RegisterView(APIView):
     permission_classes = [AllowAny]
@@ -41,6 +42,11 @@ class RegisterView(APIView):
         }, status=status.HTTP_201_CREATED)
 
 
+@extend_schema(
+    tags=["Authentication"],
+    summary="User login with email/phone and password",
+    responses={200: LoginResponseSerializer},
+)
 class LoginView(APIView):
     permission_classes = [AllowAny]
 
@@ -107,6 +113,16 @@ class RequestOTPView(generics.GenericAPIView):
         return Response({"detail": "OTP sent successfully"}, status=status.HTTP_200_OK)
 
 
+@extend_schema(
+    tags=["OTP Authentication"],
+    request=OTPVerifySerializer,
+    examples=[
+        OpenApiExample(
+            "Verify OTP Example",
+            value={"phone_number": "+49123456789", "code": "123456"},
+        )
+    ],
+)
 class VerifyOTPView(generics.GenericAPIView):
     serializer_class = OTPVerifySerializer
     permission_classes = [AllowAny]
