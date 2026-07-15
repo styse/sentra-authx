@@ -42,7 +42,7 @@ DJANGO_APPS = [
 THIRD_PARTY_APPS = [
     "rest_framework",
     "knox",
-    "drf-spectacular",
+    "drf_spectacular",
 ]
 
 LOCAL_APPS = [
@@ -56,6 +56,7 @@ INSTALLED_APPS = [
     *LOCAL_APPS,
 ]
 
+# DRF & Spectacular settings
 SPECTACULAR_SETTINGS = {
     "TITLE": "SentraAuthX API",
     "DESCRIPTION": "Advanced user authentication & session management API",
@@ -132,6 +133,9 @@ AUTH_PASSWORD_VALIDATORS = [
     },
 ]
 
+REST_FRAMEWORK = {
+    "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
+}
 
 # Internationalization
 # https://docs.djangoproject.com/en/5.2/topics/i18n/
