@@ -22,6 +22,19 @@ from apps.user_sessions.services import (
 from drf_spectacular.utils import extend_schema, OpenApiExample
 import random
 
+
+@extend_schema(
+    tags=["Authentication"],
+    examples=[
+        OpenApiExample(
+            "Register Example",
+            value={"email": "styse011@gmail.com", "phone_number": "+49123456789", "password": "yOurp1471@ssw0rd"},
+        )
+    ],
+    request=UserRegisterSerializer,
+    summary="User Register with email/phone and password",
+    responses={200: LoginResponseSerializer},
+)
 class RegisterView(APIView):
     permission_classes = [AllowAny]
 
@@ -44,6 +57,13 @@ class RegisterView(APIView):
 
 @extend_schema(
     tags=["Authentication"],
+    examples=[
+        OpenApiExample(
+            "Login Example",
+            value={"email": "styse011@gmail.com", "phone_number": "+49123456789", "password": "yOurp1471@ssw0rd"},
+        )
+    ],
+    request=UserLoginSerializer,
     summary="User login with email/phone and password",
     responses={200: LoginResponseSerializer},
 )
@@ -64,6 +84,11 @@ class LoginView(APIView):
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
+@extend_schema(
+    tags=["Authentication"],
+    summary="User logout from current device",
+    responses={200: {"description": "Logged out successfully"}},
+)
 class LogoutView(KnoxLogoutView):
     authentication_classes = [TokenAuthentication]
     permission_classes = [IsAuthenticated]
@@ -76,6 +101,11 @@ class LogoutView(KnoxLogoutView):
         return Response({"detail": "Logged out successfully",}, status=status.HTTP_200_OK)
 
 
+@extend_schema(
+    tags=["Authentication"],
+    summary="User logout from all devices",
+    responses={200: {"description": "Logged out from all devices"}},
+)
 class LogoutAllView(KnoxLogoutAllView):
     
     def post(self, request, format=None):
