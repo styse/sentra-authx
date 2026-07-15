@@ -52,6 +52,11 @@ class UserLoginSerializer(serializers.Serializer):
         return attrs
 
 
+class LoginResponseSerializer(serializers.Serializer):
+    user = serializers.DictField()
+    token = serializers.CharField()
+    
+
 class OTPRequestSerializer(serializers.Serializer):
     phone_number = serializers.CharField(required=True)
 
