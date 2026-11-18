@@ -1,44 +1,107 @@
-import random
+
+import hashlib
+import secrets
 from datetime import timedelta
-from django.utils import timezone
+
+from django.conf import settings
 from django.core.cache import cache
-from users.models import OTP
+from django.db import transaction
+from django.utils import timezone
+
+from apps.users.models import OTP
 
 
 class OTPService:
 
-    @staticmethod
-    def generate_code(length=6):
-        return ''.join([str(random.randint(0, 9)) for _ in range(length)])
+    OTP_LENGTH = 6
+    OTP_EXPIRY_MINUTES = 5
+
+    MAX_SEND_ATTEMPTS = 5
+    SEND_WINDOW_SECONDS = 3600
 
     @staticmethod
-    def can_send_otp(phone_number):
-        key = f"otp_limit_{phone_number}"
+    def generate_code():
+        return f"{secrets.randbelow(10 ** OTPService.OTP_LENGTH):06d}"
+
+    @staticmethod
+    def hash_code(code):
+        return hashlib.sha256(
+            f"{settings.SECRET_KEY}:{code}".encode()
+        ).hexdigest()
+
+    @staticmethod
+    def get_send_limit_key(phone_number, purpose):
+        return f"otp:send:{purpose}:{phone_number}"
+
+    @classmethod
+    def can_send_otp(cls, phone_number, purpose):
+        key = cls.get_send_limit_key(phone_number, purpose)
         attempts = cache.get(key, 0)
-        return attempts < 5
 
-    @staticmethod
-    def mark_attempt(phone_number):
-        key = f"otp_limit_{phone_number}"
-        attempts = cache.get(key, 0) + 1
-        cache.set(key, attempts, timeout=60)
+        return attempts < cls.MAX_SEND_ATTEMPTS
 
-    @staticmethod
-    def send_code(phone_number):
-        if not OTPService.can_send_otp(phone_number):
-            return {"ok": False, "error": "Too many attempts. Try again later."}
+    @classmethod
+    def mark_send_attempt(cls, phone_number, purpose):
+        key = cls.get_send_limit_key(phone_number, purpose)
 
-        code = OTPService.generate_code()
+        try:
+            cache.add(key, 0, timeout=cls.SEND_WINDOW_SECONDS)
+            cache.incr(key)
+        except ValueError:
+            cache.set(key, 1, timeout=cls.SEND_WINDOW_SECONDS)
 
-        OTP.objects.create(
-            phone_number=phone_number,
-            code=code,
-            expires_at=timezone.now() + timedelta(minutes=2)
+    @classmethod
+    def create_otp(cls, user, purpose):
+        if not cls.can_send_otp(user.phone_number, purpose):
+            raise ValueError("Too many OTP requests. Try again later.")
+
+        code = cls.generate_code()
+
+        otp = OTP.objects.create(
+            user=user,
+            code_hash=cls.hash_code(code),
+            purpose=purpose,
+            expires_at=timezone.now() + timedelta(
+                minutes=cls.OTP_EXPIRY_MINUTES
+            ),
         )
 
-        OTPService.mark_attempt(phone_number)
+        cls.mark_send_attempt(user.phone_number, purpose)
 
-        # TODO: integrate real SMS provider here
-        print(f"DEBUG OTP for {phone_number}: {code}")
+        return otp, code
 
-        return {"ok": True, "message": "OTP sent."}
+    @classmethod
+    def verify_otp(cls, user, code, purpose):
+        with transaction.atomic():
+            otp = (
+                OTP.objects
+                .select_for_update()
+                .filter(
+                    user=user,
+                    purpose=purpose,
+                    consumed_at__isnull=True,
+                )
+                .order_by("-created_at")
+                .first()
+            )
+
+            if otp is None:
+                raise ValueError("Invalid or expired OTP.")
+
+            if otp.is_expired():
+                raise ValueError("Invalid or expired OTP.")
+
+            if otp.has_exceeded_attempts():
+                raise ValueError("Maximum OTP attempts exceeded.")
+
+            otp.attempts += 1
+
+            if otp.code_hash != cls.hash_code(code):
+                otp.save(update_fields=["attempts"])
+                raise ValueError("Invalid or expired OTP.")
+
+            otp.consumed_at = timezone.now()
+
+            otp.save(update_fields=["attempts", "consumed_at"])
+
+            return otp
