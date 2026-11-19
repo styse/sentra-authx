@@ -58,33 +58,22 @@ class LoginResponseSerializer(serializers.Serializer):
     
 
 class OTPRequestSerializer(serializers.Serializer):
-    phone_number = serializers.CharField(required=True)
-
-    def validate_phone(self, value):
-        if not User.objects.filter(phone_number=value).exists():
-            raise serializers.ValidationError("User with this phone number does not exist.")
-        return value
+    phone_number = serializers.CharField(max_length=20)
+    purpose = serializers.ChoiceField(
+        choices=["login", "phone_verification"],
+        default="login",
+    )
 
 
 class OTPVerifySerializer(serializers.Serializer):
-    phone_number = serializers.CharField()
-    code = serializers.CharField(max_length=6)
-
-    def validate(self, attrs):
-        phone = attrs['phone_number']
-        code = attrs['code']
-
-        try:
-            otp = OTP.objects.filter(
-                user__phone_number=phone,
-                code=code,
-                is_used=False
-            ).latest('created_at')
-        except OTP.DoesNotExist:
-            raise serializers.ValidationError("Invalid OTP.")
-
-        if otp.is_expired():
-            raise serializers.ValidationError("OTP expired.")
-
-        attrs['otp_instance'] = otp
-        return attrs
+    phone_number = serializers.CharField(max_length=20)
+    code = serializers.RegexField(
+        regex=r"^\d{6}$",
+        error_messages={
+            "invalid": "OTP must contain exactly 6 digits."
+        },
+    )
+    purpose = serializers.ChoiceField(
+        choices=["login", "phone_verification"],
+        default="login",
+    )
