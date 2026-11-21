@@ -1,26 +1,28 @@
-from rest_framework.views import APIView
-from rest_framework.response import Response
-from rest_framework import status
-from rest_framework.permissions import AllowAny, IsAuthenticated
-from rest_framework import generics
-from knox.models import AuthToken
-from knox.views import LogoutView as KnoxLogoutView
-from knox.views import LogoutAllView as KnoxLogoutAllView
+from drf_spectacular.utils import OpenApiExample, extend_schema
 from knox.auth import TokenAuthentication
-from django.utils import timezone
+from knox.models import AuthToken
+from knox.views import LogoutAllView as KnoxLogoutAllView
+from knox.views import LogoutView as KnoxLogoutView
+from rest_framework import generics, status
+from rest_framework.permissions import AllowAny, IsAuthenticated
+from rest_framework.response import Response
+from rest_framework.views import APIView
+
+from apps.user_sessions.services import (
+    create_user_session,
+    deactivate_all_sessions_for_user,
+    deactivate_session_by_token_key,
+)
+from apps.users.services.otp import OTPService
+
 from .models import OTP, User
 from .serializers import (
-    UserRegisterSerializer, UserLoginSerializer,
-    OTPRequestSerializer, OTPVerifySerializer,
-    LoginResponseSerializer
+    LoginResponseSerializer,
+    OTPRequestSerializer,
+    OTPVerifySerializer,
+    UserLoginSerializer,
+    UserRegisterSerializer,
 )
-from apps.user_sessions.services import (
-    deactivate_session_by_token_key,
-    deactivate_all_sessions_for_user,
-    create_user_session
-)
-from drf_spectacular.utils import extend_schema, OpenApiExample
-import random
 
 
 @extend_schema(
@@ -36,7 +38,7 @@ import random
     responses={200: LoginResponseSerializer},
 )
 class RegisterView(APIView):
-    permission_classes = [AllowAny]
+    permission_classes = [AllowAny]  # noqa: RUF012
 
     def post(self, request):
         serializer = UserRegisterSerializer(data=request.data)
@@ -68,14 +70,14 @@ class RegisterView(APIView):
     responses={200: LoginResponseSerializer},
 )
 class LoginView(APIView):
-    permission_classes = [AllowAny]
+    permission_classes = [AllowAny]  # noqa: RUF012
 
     def post(self, request):
         serializer = UserLoginSerializer(data=request.data)
         if serializer.is_valid():
             user = serializer.validated_data['user']
 
-            auth_token, token = AuthToken.objects.create(user)
+            _auth_token, token = AuthToken.objects.create(user)
 
             create_user_session(user, token, request)
             
@@ -126,21 +128,35 @@ class RequestOTPView(generics.GenericAPIView):
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 
-        phone_number = serializer.validated_data['phone_number']
-        user = User.objects.get(phone_number=phone_number)
+        phone_number = serializer.validated_data["phone_number"]
+        purpose = serializer.validated_data["purpose"]
 
-        # Generate OTP
-        code = str(random.randint(100000, 999999))
-        OTP.objects.create(
-            user=user,
-            code=code,
-            expires_at=timezone.now() + timezone.timedelta(minutes=5)
+        user = User.objects.filter(
+            phone_number=phone_number
+        ).first()
+
+        # Avoid revealing whether a phone number exists.
+        if user is None:
+            return Response(
+                {"detail": "If the account exists, an OTP will be sent."},
+                status=status.HTTP_200_OK,
+            )
+
+        try:
+            otp, code = OTPService.create_otp(user, purpose)
+        except ValueError as exc:
+            return Response(
+                {"detail": str(exc)},
+                status=status.HTTP_429_TOO_MANY_REQUESTS,
+            )
+
+        # Temporary development-only delivery.
+        print(f"DEBUG OTP for {phone_number}: {code}")
+
+        return Response(
+            {"detail": "If the account exists, an OTP will be sent."},
+            status=status.HTTP_200_OK,
         )
-
-        # TODO: Send OTP via SMS provider
-        print(f"OTP for {phone_number}: {code}")
-
-        return Response({"detail": "OTP sent successfully"}, status=status.HTTP_200_OK)
 
 
 @extend_schema(
@@ -161,18 +177,61 @@ class VerifyOTPView(generics.GenericAPIView):
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 
-        otp_instance = serializer.validated_data['otp_instance']
-        otp_instance.is_used = True
-        otp_instance.save()
+        phone_number = serializer.validated_data["phone_number"]
+        code = serializer.validated_data["code"]
+        purpose = serializer.validated_data["purpose"]
 
-        token_key = AuthToken.objects.create(otp_instance.user)[1]
-        create_user_session(otp_instance.user, token_key, request)
+        user = User.objects.filter(
+            phone_number=phone_number
+        ).first()
 
-        return Response({
-            "user": {
-                "id": otp_instance.user.id,
-                "phone_number": otp_instance.user.phone_number,
-                "email": otp_instance.user.email,
-            },
-            "token": token_key
-        }, status=status.HTTP_200_OK)
+        if user is None:
+            return Response(
+                {"detail": "Invalid or expired OTP."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            otp = OTPService.verify_otp(
+                user=user,
+                code=code,
+                purpose=purpose,
+            )
+        except ValueError as exc:
+            return Response(
+                {"detail": str(exc)},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if purpose == OTP.Purpose.LOGIN:
+            auth_token, token = AuthToken.objects.create(user)
+
+            create_user_session(
+                user=user,
+                token_key=token,
+                request=request,
+            )
+
+            return Response(
+                {
+                    "user": {
+                        "id": user.id,
+                        "email": user.email,
+                        "phone_number": user.phone_number,
+                    },
+                    "token": token,
+                },
+                status=status.HTTP_200_OK,
+            )
+
+        if purpose == OTP.Purpose.PHONE_VERIFICATION:
+            # Phone verification will be implemented in a later step.
+            return Response(
+                {"detail": "OTP verified successfully."},
+                status=status.HTTP_200_OK,
+            )
+
+        return Response(
+            {"detail": "Unsupported OTP purpose."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
